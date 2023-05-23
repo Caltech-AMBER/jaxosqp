@@ -15,7 +15,10 @@ Then, install the package locally using
 
 OSQP solves quadratic programs of the form:
 
-$$\begin{aligned} min_x & \quad \frac{1}{2} x^T P x + q^T x \\ \text{s.t. } & \quad \ell \leq A x \leq u. \end{aligned}$$ 
+$$\begin{align} 
+\min_x & \quad \frac{1}{2} x^T P x + q^T x \\
+\text{s.t. } & \quad \ell \leq A x \leq u. 
+\end{align}$$ 
 
 This solver is built to solve batches of QPs in this form, assuming the problem data `P, q, A, l, u` are stored as `jnp.array`s of the appropriate size.
 
