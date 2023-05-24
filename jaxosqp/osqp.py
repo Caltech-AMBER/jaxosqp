@@ -77,10 +77,7 @@ class OSQPState:
 	kkt_mat: jnp.ndarray
 	"""Full, dense KKT matrix used for ADMM step computation."""
 	kkt_lu: Tuple[jnp.ndarray, jnp.ndarray]
-	# kkt_q: jnp.ndarray
-	# """Q factor of KKT matrix."""
-	# kkt_r: jnp.ndarray
-	# """R factor of KKT matrix."""
+	"""LU factorization of the KKT matrix; a tuple of permuations / data for each matrix."""
 	rho: jnp.ndarray
 	"""ADMM penalty weights."""
 
@@ -121,7 +118,7 @@ class OSQPProblem:
 		"""
 		Helper method to wrap problem data + create initial solver state.
 
-		Ensures problem data are shaped correctly + computes initial KKT matrix + QR factors.
+		Ensures problem data are shaped correctly + computes initial KKT matrix + LU factors.
 		"""
 
 		# Pull out shape vars for convenience. 
@@ -150,9 +147,7 @@ class OSQPProblem:
 		# Setup penalty weights.
 		rho = jnp.where(l == u, 1e3 * self.config.rho_bar, self.config.rho_bar)
 
-		# Compute initial KKT matrix.
-		# kkt_mat, kkt_q, kkt_r = build_kkt(P, A, rho, self.config.sigma)
-
+		# Build KKT matrix and LU factorize it. 
 		kkt_mat, kkt_lu = build_kkt(P, A, rho, self.config.sigma)
 
 		# Wrap problem data in OSQPData object. 
@@ -165,14 +160,10 @@ class OSQPProblem:
 		Main step of OSQP algorithm; computes one ADMM step on the problem.
 		"""
 		# Compute residuals vector.
-		r = jax.named_call(utils.vcat, name="vcat")(self.config.sigma * state.x - data.q, state.z - (1/state.rho) * state.y)
-		r = jax.named_call(jax.scipy.linalg.lu_solve, name="lu_solve")(state.kkt_lu, r)
+		r = utils.vcat(self.config.sigma * state.x - data.q, state.z - (1/state.rho) * state.y)
 
-		# Solve KKT system (in QR form).
-		# # r = jax.scipy.linalg.solve_triangular(state.kkt_r, r)
-		# r = jax.scipy.linalg.solve_triangular(state.kkt_chol, r)
-		# r = jax.scipy.linalg.solve_triangular(state.kkt_chol, r, trans="T")
-		# r = jax.lax.linalg.triangular_solve(state.kkt_r, r, left_side=True)
+		# Solve the KKT system in LU form. 
+		r = jax.scipy.linalg.lu_solve(state.kkt_lu, r)
 
 		# Pull out ADMM vars corresponding to x, z. 
 		chi = r[:self.n]
@@ -214,23 +205,23 @@ class OSQPProblem:
 		# If we should check termintaion this iteration, update term. vars.
 		state = jax.lax.cond(
 			jnp.mod(ii, self.config.term_check_iters) == 0, 
-			jax.named_call(lambda val: self.check_converged(*val), name='conv_check'), 
+			lambda val: self.check_converged(*val), 
 			lambda val: state, (data, state))
 
 		state = jax.lax.cond(
 			jnp.mod(ii, self.config.term_check_iters) == 0, 
-			jax.named_call(lambda val: self.check_primal_infeas(*val), name='primal_check'), 
+			lambda val: self.check_primal_infeas(*val), 
 			lambda val: state, (data, state))
 
 		state = jax.lax.cond(
 			jnp.mod(ii, self.config.term_check_iters) == 0, 
-			jax.named_call(lambda val: self.check_dual_infeas(*val), name='dual_check'), 
+			lambda val: self.check_dual_infeas(*val), 
 			lambda val: state, (data, state))
 
 		# If we should scale the penalty this iteration, update penalty. 
 		state = jax.lax.cond(
 			jnp.mod(ii, self.config.rho_update_iters) == 0,
-			jax.named_call(lambda val: self.update_rho(*val), name='rho_update'),
+			lambda val: self.update_rho(*val),
 			lambda val: state,
 			(data, state))
 
@@ -353,7 +344,7 @@ class OSQPProblem:
 
 def build_kkt(P, A, rho, sigma):
 	"""
-	Helper function to build the OSQP KKT system (and QR factorize it).
+	Helper function to build the OSQP KKT system (and LU factorize it).
 	"""
 	kkt_mat = jax.vmap(build_single_kkt, in_axes=(0, 0, 0, None))(P, A, rho, sigma)
 	kkt_lu = jax.scipy.linalg.lu_factor(kkt_mat)
