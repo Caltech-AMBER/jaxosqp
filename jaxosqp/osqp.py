@@ -5,7 +5,7 @@ import jax.numpy as jnp
 
 from functools import partial
 from jaxosqp import utils
-from jax import tree_util
+from typing import Tuple
 
 @jdc.pytree_dataclass
 class OSQPConfig:
@@ -76,10 +76,8 @@ class OSQPState:
 	"""Flags for dual infeasibility."""
 	kkt_mat: jnp.ndarray
 	"""Full, dense KKT matrix used for ADMM step computation."""
-	kkt_q: jnp.ndarray
-	"""Q factor of KKT matrix."""
-	kkt_r: jnp.ndarray
-	"""R factor of KKT matrix."""
+	kkt_lu: Tuple[jnp.ndarray, jnp.ndarray]
+	"""LU factorization of the KKT matrix; a tuple of permuations / data for each matrix."""
 	rho: jnp.ndarray
 	"""ADMM penalty weights."""
 
@@ -120,7 +118,7 @@ class OSQPProblem:
 		"""
 		Helper method to wrap problem data + create initial solver state.
 
-		Ensures problem data are shaped correctly + computes initial KKT matrix + QR factors.
+		Ensures problem data are shaped correctly + computes initial KKT matrix + LU factors.
 		"""
 
 		# Pull out shape vars for convenience. 
@@ -149,28 +147,27 @@ class OSQPProblem:
 		# Setup penalty weights.
 		rho = jnp.where(l == u, 1e3 * self.config.rho_bar, self.config.rho_bar)
 
-		# Compute initial KKT matrix.
-		kkt_mat, kkt_q, kkt_r = build_kkt(P, A, rho, self.config.sigma)
+		# Build KKT matrix and LU factorize it. 
+		kkt_mat, kkt_lu = build_kkt(P, A, rho, self.config.sigma)
 
 		# Wrap problem data in OSQPData object. 
 		data = OSQPData(P, q, A, l, u)
 
-		return data, OSQPState(x, z, chi, zeta, y, dx, dy, converged, primal_infeas, dual_infeas, kkt_mat, kkt_q, kkt_r, rho)
+		return data, OSQPState(x, z, chi, zeta, y, dx, dy, converged, primal_infeas, dual_infeas, kkt_mat, kkt_lu, rho)
 
 	def step(self, data, state):
 		"""
 		Main step of OSQP algorithm; computes one ADMM step on the problem.
 		"""
 		# Compute residuals vector.
-		r = state.kkt_q.transpose(0, 2, 1) @ utils.hcat(self.config.sigma * state.x - data.q, state.z - (1/state.rho) * state.y)[:, :, None]
-		r = r.squeeze()
+		r = utils.vcat(self.config.sigma * state.x - data.q, state.z - (1/state.rho) * state.y)
 
-		# Solve KKT system (in QR form).
-		r = jax.vmap(jax.scipy.linalg.solve_triangular)(state.kkt_r, r)
+		# Solve the KKT system in LU form. 
+		r = jax.scipy.linalg.lu_solve(state.kkt_lu, r)
 
 		# Pull out ADMM vars corresponding to x, z. 
-		chi = r[:, :self.n]
-		zeta = state.z + (1/state.rho) * (r[:, self.n:] - state.y)
+		chi = r[:self.n]
+		zeta = state.z + (1/state.rho) * (r[self.n:] - state.y)
 
 		# Update x, z with a filtered step.
 		new_x = self.config.alpha * chi + (1 - self.config.alpha) * state.x
@@ -239,7 +236,7 @@ class OSQPProblem:
 		is_finished = jnp.logical_or(state.converged, state.primal_infeas)
 		is_finished = jnp.logical_or(is_finished, state.dual_infeas)
 
-		return jnp.logical_and(ii < self.config.max_iters, jnp.logical_not(jnp.all(is_finished)))
+		return jnp.logical_and(ii < self.config.max_iters, jnp.logical_not(is_finished))
 
 	@jax.jit
 	def solve(self, data, state):
@@ -256,23 +253,23 @@ class OSQPProblem:
 		"""
 
 		# Compute some matrix-vector products we'll need. 
-		Ax = (data.A @ state.x[:, :, None]).squeeze()
-		Px = (data.P @ state.x[:, :, None]).squeeze()
-		Aty = (data.A.transpose(0, 2, 1) @ state.y[:, :, None]).squeeze()
+		Ax = data.A @ state.x
+		Px = data.P @ state.x
+		Aty = data.A.T @ state.y
 
 		# Compute primal and dual residuals.
 		r_prim = Ax - state.z
 		r_dual = Px + data.q + Aty
 
 		# Compute l-inf norms of a bunch of quantities we need.
-		prim_norm = jnp.linalg.norm(r_prim, ord=jnp.inf, axis=-1)
-		dual_norm = jnp.linalg.norm(r_dual, ord=jnp.inf, axis=-1)
+		prim_norm = jnp.linalg.norm(r_prim, ord=jnp.inf)
+		dual_norm = jnp.linalg.norm(r_dual, ord=jnp.inf)
 
-		Ax_norm = jnp.linalg.norm(Ax, ord=jnp.inf, axis=-1)
-		Px_norm = jnp.linalg.norm(Px, ord=jnp.inf, axis=-1)
-		Aty_norm = jnp.linalg.norm(Aty, ord=jnp.inf, axis=-1)
-		z_norm = jnp.linalg.norm(state.z, ord=jnp.inf, axis=-1)
-		q_norm = jnp.linalg.norm(data.q, ord=jnp.inf, axis=-1)
+		Ax_norm = jnp.linalg.norm(Ax, ord=jnp.inf)
+		Px_norm = jnp.linalg.norm(Px, ord=jnp.inf)
+		Aty_norm = jnp.linalg.norm(Aty, ord=jnp.inf)
+		z_norm = jnp.linalg.norm(state.z, ord=jnp.inf)
+		q_norm = jnp.linalg.norm(data.q, ord=jnp.inf)
 
 		# Compute the epsilon (combined abs / rel tolerance) needed for convergence. 
 		eps_prim = self.config.eps_abs + self.config.eps_rel * jnp.maximum(Ax_norm, z_norm)
@@ -294,11 +291,11 @@ class OSQPProblem:
 		"""
 
 		# Precompute infinity norms of dy, A * dy.
-		dy_inf = jnp.linalg.norm(state.dy, ord=jnp.inf, axis=-1)
-		Ady_inf = jnp.linalg.norm((data.A.transpose(0, 2, 1) @ state.dy[:, :, None]).squeeze(), ord=jnp.inf, axis=-1)
+		dy_inf = jnp.linalg.norm(state.dy, ord=jnp.inf)
+		Ady_inf = jnp.linalg.norm(data.A.T @ state.dy, ord=jnp.inf)
 
 		# Compute constraint residual terms.
-		const_residuals = jnp.sum(data.u * jnp.maximum(0., state.dy) + data.l * jnp.minimum(0., state.dy), axis=-1)
+		const_residuals = jnp.dot(data.u, jnp.maximum(0., state.dy) + data.l * jnp.minimum(0., state.dy))
 
 		# Problem is primal infeasible if both inequalities hold.
 		nullspace = Ady_inf <= self.config.eps_pinf * dy_inf
@@ -314,23 +311,22 @@ class OSQPProblem:
 		Checks problems for dual infeasibility. Returns a state with updated `dual_infeas` variables. 
 		"""
 		# Compute some matrix-vector products we'll need. 
-		Pdx = (data.P @ state.dx[:, :, None]).squeeze()
-		Adx = (data.A @ state.dx[:, :, None]).squeeze()
-		qdx = jnp.sum(data.q * state.dx, axis=-1)
+		Pdx = data.P @ state.dx
+		Adx = data.A @ state.dx
+		qdx = jnp.dot(data.q, state.dx)
 
 		# Compute some l-inf norms we'll need. 
-		dx_norm = jnp.linalg.norm(state.dx, ord=jnp.inf, axis=-1)
-		Pdx_norm = jnp.linalg.norm(Pdx, ord=jnp.inf, axis=-1)
-		qdx_norm = jnp.linalg.norm(qdx, ord=jnp.inf, axis=-1)
+		dx_norm = jnp.linalg.norm(state.dx, ord=jnp.inf)
+		Pdx_norm = jnp.linalg.norm(Pdx, ord=jnp.inf)
 
 		# Enforce upper / lower bounds only on constraints where l/u are finite. 
-		lower_bound = jnp.where(jnp.isinf(data.l), -self.config.eps_dinf * dx_norm[:, None], -jnp.inf)
-		upper_bound = jnp.where(jnp.isinf(data.u), self.config.eps_dinf * dx_norm[:, None], jnp.inf)
+		lower_bound = jnp.where(jnp.isinf(data.l), -self.config.eps_dinf * dx_norm, -jnp.inf)
+		upper_bound = jnp.where(jnp.isinf(data.u), self.config.eps_dinf * dx_norm, jnp.inf)
 
 		dual_infeas = Pdx_norm <= self.config.eps_dinf * dx_norm
 		dual_infeas = jnp.logical_and(dual_infeas, qdx <= self.config.eps_dinf * dx_norm)
-		dual_infeas = jnp.logical_and(dual_infeas, jnp.all(lower_bound <= Adx, axis=-1))
-		dual_infeas = jnp.logical_and(dual_infeas, jnp.all(Adx <= upper_bound, axis=-1))
+		dual_infeas = jnp.logical_and(dual_infeas, jnp.all(lower_bound <= Adx))
+		dual_infeas = jnp.logical_and(dual_infeas, jnp.all(Adx <= upper_bound))
 
 		with jdc.copy_and_mutate(state) as new_state:
 			new_state.dual_infeas = dual_infeas
@@ -348,17 +344,18 @@ class OSQPProblem:
 
 def build_kkt(P, A, rho, sigma):
 	"""
-	Helper function to build the OSQP KKT system (and QR factorize it).
+	Helper function to build the OSQP KKT system (and LU factorize it).
 	"""
 	kkt_mat = jax.vmap(build_single_kkt, in_axes=(0, 0, 0, None))(P, A, rho, sigma)
-	kkt_q, kkt_r = jnp.linalg.qr(kkt_mat)
+	kkt_lu = jax.scipy.linalg.lu_factor(kkt_mat)
 
-	return kkt_mat, kkt_q, kkt_r
+	return kkt_mat, kkt_lu
 
 def build_single_kkt(P, A, rho, sigma):
 	"""
 	Function to build a single OSQP KKT system (vmap this for batches).
 	"""
+
 	return utils.vcat(
 		utils.hcat(P + sigma * jnp.eye(P.shape[0]), A.T),
 		utils.hcat(A, -jnp.diag(1/rho)))
