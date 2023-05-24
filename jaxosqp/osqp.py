@@ -38,7 +38,10 @@ class OSQPConfig:
 @jdc.pytree_dataclass
 class OSQPData:
 	"""
-	Stores data for OSQP problem. 
+	Stores data for OSQP problem.
+
+	If problem scaling is not used, D, E, c will be all ones -- otherwise
+	these will have non-trivial values and problem data is scaled accordingly. 
 	"""
 	P: jnp.ndarray
 	"""Cost matrix (problem parameter)."""
@@ -351,32 +354,43 @@ class OSQPProblem:
 		return new_state
 
 	def scale_problem(self, data):
-		"""Implements Ruiz equilibriation for problem data. Returns an OSQPData object that scales the problem
-			per Sec. 5.1."""
+		"""Implements Ruiz equilibriation for problem data (Algorithm 2). Returns modified data object with
+			non-trivial D, E, c to approximately equally scale problem data."""
 
 		def cond_fun(val):
+			"""
+			Condition for stopping the while loop -- max iters. 
+			"""
 			ii, data = val
 			return ii < self.config.scaling_iters
 
 		def body_fun(val):
+			"""
+			Main body of while loop. 
+			"""
 			ii, data = val
 
-			d = 1 / jnp.sqrt(1e-8 + jnp.linalg.norm(utils.vcat(data.P, data.A), ord=jnp.inf, axis=0))
-			e = 1 / jnp.sqrt(1e-8 + jnp.linalg.norm(data.A.T, ord=jnp.inf, axis=0))
+			# Compute delta terms by looking at l-inf norms of the "data matrix" M (32).
+			delta_d = 1 / jnp.sqrt(1e-8 + jnp.linalg.norm(utils.vcat(data.P, data.A), ord=jnp.inf, axis=0))
+			delta_e = 1 / jnp.sqrt(1e-8 + jnp.linalg.norm(data.A.T, ord=jnp.inf, axis=0))
 
-			P = data.c * jnp.diag(d) @ data.P @ jnp.diag(d)
-			q = data.c * jnp.diag(d) @ data.q
-			A = jnp.diag(e) @ data.A @ jnp.diag(d)
-			l = jnp.diag(e) @ data.l
-			u = jnp.diag(e) @ data.u
+			# Update problem data with new scaling. 
+			P = data.c * jnp.diag(delta_d) @ data.P @ jnp.diag(delta_d)
+			q = data.c * jnp.diag(delta_d) @ data.q
+			A = jnp.diag(delta_e) @ data.A @ jnp.diag(delta_d)
+			l = jnp.diag(delta_e) @ data.l
+			u = jnp.diag(delta_e) @ data.u
 
+			# Compute new cost scaling term.
 			gamma = 1 / jnp.maximum(jnp.mean(jnp.linalg.norm(P, ord=jnp.inf, axis=0)), jnp.linalg.norm(q, ord=jnp.inf))
 
+			# Update cost parameters with new scaling.
 			P = gamma * P
 			q = gamma * q
 
 			c = gamma * data.c
 
+			# Return new OSQPData object with scaled parameters. 
 			with jdc.copy_and_mutate(data) as new_data:
 				new_data.P = P
 				new_data.q = q
@@ -384,8 +398,8 @@ class OSQPProblem:
 				new_data.l = l
 				new_data.u = u
 
-				new_data.D = d * data.D
-				new_data.E = e * data.E
+				new_data.D = delta_d * data.D
+				new_data.E = delta_e * data.E
 				new_data.c = c
 
 			return (ii+1, new_data)
