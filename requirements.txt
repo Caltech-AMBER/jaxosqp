@@ -1,0 +1,15 @@
+# Last updated: 05/23/2023
+# [NOTE] should also run `conda install cuda -c nvidia` as well to update cuda driver
+
+# for jax[cpu] and jax[cuda] respectively
+--find-links https://storage.googleapis.com/jax-releases/jax_releases.html
+--find-links https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+--extra-index-url https://download.pytorch.org/whl/cpu/
+
+jax[cuda12_pip]>=0.4.10
+jax_dataclasses>=1.5.1
+jaxlib==0.4.10+cuda12.cudnn88
+matplotlib>=3.7.1
+numpy>=1.24.3
+nvidia-cudnn-cu12>=8.9.1.23
+scipy>=1.10.1
