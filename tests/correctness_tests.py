@@ -1,17 +1,22 @@
+import types
+
 import cvxpy as cp
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import jit, random, vmap
-from hypothesis import given, strategies as st
+from hypothesis import given, settings
+from jax import jit
 
 from jaxosqp import osqp
+
+from .hypothesis_utils import qp_data_dims
 
 jax.config.update("jax_enable_x64", True)
 
 # ######### #
 # UTILITIES #
 # ######### #
+
 
 @jit
 def outer(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
@@ -21,98 +26,75 @@ def outer(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
     assert a.shape[-1] == b.shape[0]
     return a @ b.T
 
-# ##### #
-# TESTS #
-# ##### #
 
-@given(
-    st.integers(min_value=1, max_value=10),  # batch size
-    st.integers(min_value=1, max_value=10),  # problem dimension
-    st.integers(min_value=1, max_value=10),  # number of constraints
-)
-def test_qp_convergence(B: int, n: int, m: int):
-    """Tests the correctness of a batch of QPs.
+# ############ #
+# SOLVER TESTS #
+# ############ #
+
+
+@given(qp_data_dims())
+@settings(deadline=None)
+def test_qp_convergence(data: types.GenericAlias(tuple, (np.ndarray,) * 5)):
+    """Tests the correctness of the QP solve.
 
     Parameters
     ----------
-    B : int
-        The batch size.
-    n : int
-        The dimension of the decision variable.
-    m : int
-        The number of constraints.
+    data : tuple[np.ndarray] * 5
+        The QP problem data.
+        data[0] = P
+        data[1] = q
+        data[2] = A
+        data[3] = l
+        data[4] = u
     """
-    # batched utility
-    outer_batched = vmap(outer)
+    # unpacking data
+    P = data[0]
+    q = data[1]
+    A = data[2]
+    l = data[3]
+    u = data[4]
 
-    # random problem data
-    key = random.PRNGKey(0)
-    _P = random.normal(key, (B, n, n))
-    P = outer_batched(_P, _P)  # (B, n, n)
+    # solving a jax OSQP problem instance
+    # TODO(ahl): once the constructor is fixed to not assume batched inputs, unbatch these data arrays and also the optimization outputs. also, remove the vmap call.
+    # TODO(ahl): once the state API stabilizes, change these tests
+    P_jax = jnp.array(P)[None, ...]
+    q_jax = jnp.array(q)[None, ...]
+    A_jax = jnp.array(A)[None, ...]
+    l_jax = jnp.array(l)[None, ...]
+    u_jax = jnp.array(u)[None, ...]
+    prob_jax, data, state = osqp.OSQPProblem.from_data(
+        P_jax, q_jax, A_jax, l_jax, u_jax
+    )
+    state = jax.vmap(prob_jax.solve)(data, state)  # (iters, data, info)
+    info = state[-1]
 
-    key, subkey = random.split(key)
-    q = random.normal(subkey, (B, n))
+    # solving a cvxpy problem instance
+    n = q.shape[0]
+    x = cp.Variable(n)
+    prob = cp.Problem(
+        cp.Minimize((1 / 2) * cp.quad_form(x, P) + q.T @ x),
+        [A @ x <= u, l <= A @ x],
+    )
+    prob.solve(solver=cp.OSQP)
 
-    key, subkey = random.split(key)
-    A = random.normal(subkey, (B, m, n))
+    # checking that impl converges iff cvxpy converges
+    converged = info.converged.item()
+    # if not converged:
+    #     breakpoint()
+    assert converged == (prob.status not in ["infeasible", "unbounded"])
 
-    key, subkey = random.split(key)
-    l = -random.uniform(subkey, (B, m))
+    # checking closeness of primal/dual optima
+    if converged:
+        opt_primal_jax = info.x[0, ...]
+        opt_dual_jax = info.y[0, ...]
 
-    key, subkey = random.split(key)
-    u = random.uniform(subkey, (B, m))
-
-    # solving a batched jax OSQP problem instance
-    prob_jax, data, state = osqp.OSQPProblem.from_data(P, q, A, l, u)
-    state = vmap(prob_jax.solve)(data, state)
-    opt_primal_jax = state.x
-    opt_dual_jax = state.y
-
-    # [DEBUG]
-    # print("JAX")
-    # print(P)
-    # print(q)
-    # print(A)
-    # print(l)
-    # print(u)
-
-    # solving cvxpy problem instances serially
-    opt_primal_cvx = []
-    opt_dual_cvx = []
-    for b in range(B):
-        P_np = np.array(P[b, ...])
-        q_np = np.array(q[b, ...])
-        A_np = np.array(A[b, ...])
-        l_np = np.array(l[b, ...])
-        u_np = np.array(u[b, ...])
-
-        # [DEBUG]
-        # print("CVX")
-        # print(P_np)
-        # print(q_np)
-        # print(A_np)
-        # print(l_np)
-        # print(u_np)
-
-        x = cp.Variable(n)
-        prob = cp.Problem(
-            cp.Minimize(
-                (1 / 2) * cp.quad_form(x, P_np) + q_np.T @ x),
-                [A_np @ x <= u_np, l_np <= A_np @ x],
-            )
-        prob.solve(solver=cp.OSQP)
-        opt_primal_cvx.append(x.value)
-        _opt_dual_cvx = np.concatenate(
-            (
-                prob.constraints[0].dual_value,
-                prob.constraints[1].dual_value,
-            ),
-            axis=-1,
+        opt_primal_cvx = x.value
+        opt_dual_cvx = np.max(
+            (prob.constraints[0].dual_value, prob.constraints[1].dual_value),
+            axis=0,
         )
-        opt_dual_cvx.append(_opt_dual_cvx)
-    opt_primal_cvx = np.stack(opt_primal_cvx)
-    opt_dual_cvx = np.stack(opt_dual_cvx)
 
-    # checking closeness
-    assert np.allclose(np.array(opt_primal_jax), opt_primal_cvx, rtol=1e-3, atol=1e-3)
-    assert np.allclose(np.array(opt_dual_jax), opt_dual_cvx, rtol=1e-3, atol=1e-3)
+        assert np.allclose(
+            np.array(opt_primal_jax), opt_primal_cvx, rtol=1e-3, atol=1e-3
+        )
+        assert np.allclose(np.array(opt_dual_jax), opt_dual_cvx, rtol=1e-3, atol=1e-3)

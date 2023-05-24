@@ -17,5 +17,6 @@ jaxlib==0.4.10+cuda12.cudnn88
 matplotlib>=3.7.1
 numpy>=1.24.3
 nvidia-cudnn-cu12>=8.9.1.23
+pre-commit>=3.3.2
 pytest>=7.3.1
 scipy>=1.10.1
