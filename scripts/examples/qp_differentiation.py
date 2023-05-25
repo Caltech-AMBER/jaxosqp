@@ -2,7 +2,7 @@ import time
 
 import jax
 import jax.numpy as jnp
-import numpy
+import numpy as np
 from jax import jit, jacfwd, vmap
 from jax.tree_util import tree_flatten
 
@@ -19,14 +19,22 @@ def loss(P, q, A, l, u):
 jac_loss = jit(jacfwd(loss, argnums=(0, 1, 2, 3, 4)))
 
 if __name__ == "__main__":
-    # TODO(ahl): once batching not required for config, unbatch this example
-    # generating simple problem data
-    B = 100  # batch size
-    P = jnp.tile(jnp.diag(jnp.array([1.0, 2.0, 3.0])), (B, 1, 1))
-    q = jnp.tile(jnp.array([1.0, 2.0, 3.0]), (B, 1))
-    A = jnp.tile(jnp.arange(6, dtype=jnp.float32).reshape((2, 3)), (B, 1, 1))
-    l = jnp.tile(jnp.array([-1.0, -2.0]), (B, 1))
-    u = jnp.tile(jnp.array([1.0, 2.0]), (B, 1))
+    # [NOTE] roughly the problem size needed for PFC bound with D=4
+    B = 16  # batch size
+    n = 17  # num decision vars
+    m = 14  # num constraints
+
+    # P = jnp.tile(jnp.diag(jnp.arange(n, dtype=jnp.float32), (B, 1, 1))  # case: QP
+    P = jnp.zeros((B, n, n))  # case: LP
+
+    # q = jnp.tile(jnp.arange(n, dtype=jnp.float32), (B, 1))
+    # A = jnp.tile(jnp.arange(m * n, dtype=jnp.float32).reshape((m, n)), (B, 1, 1))
+    # l = jnp.tile(-jnp.arange(m, dtype=jnp.float32), (B, 1))
+    # u = jnp.tile(jnp.arange(m, dtype=jnp.float32), (B, 1))
+    q = jnp.array(np.random.randn(B, n))
+    A = jnp.array(np.random.randn(B, m, n))
+    l = -jnp.array(np.random.rand(B, m))
+    u = jnp.array(np.random.rand(B, m))
 
     # pre-compiling
     loss(P, q, A, l, u)
@@ -36,7 +44,7 @@ if __name__ == "__main__":
     t0 = time.time()
     val = loss(P, q, A, l, u).block_until_ready()
     t1 = time.time()
-    print(f"Avg. time to compute loss: {(t1 - t0) / B}")
+    print(f"Avg. time to compute loss: {(t1 - t0) / B}")  # 4.88e-5
 
     t0 = time.time()
     # first element of list of Jacobians, done this way to block correctly, since
@@ -44,4 +52,4 @@ if __name__ == "__main__":
     # for non-timing, `jac_loss(P, q, A, l, u)` is sufficient.
     Jval = tree_flatten(jac_loss(P, q, A, l, u))[0][0].block_until_ready()
     t1 = time.time()
-    print(f"Avg. time to compute Jacobian of loss: {(t1 - t0) / B}")
+    print(f"Avg. time to compute Jacobian of loss: {(t1 - t0) / B}")  # 7.42e-3
