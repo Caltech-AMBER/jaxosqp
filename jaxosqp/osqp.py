@@ -32,7 +32,7 @@ class OSQPConfig:
 	"""Maximum number of iterations to run during solve."""
 	term_check_iters: jdc.Static[int] = 25
 	"""Frequency of termination check."""
-	rho_update_iters: jdc.Static[int] = 100
+	rho_update_iters: jdc.Static[int] = 1
 	"""Frequency of rho update."""
 
 @jdc.pytree_dataclass
@@ -164,7 +164,7 @@ class OSQPProblem:
 		# Wrap problem data in OSQPData object. 
 		data = OSQPData(P, q, A, l, u, D, E, c)
 
-		data = jax.vmap(self.scale_problem)(data)
+		# data = jax.vmap(self.scale_problem)(data)
 
 		# Setup penalty weights.
 		rho = jnp.where(l == u, 1e3 * self.config.rho_bar, self.config.rho_bar)
@@ -410,9 +410,37 @@ class OSQPProblem:
 		"""
 		Update the penalty parameters rho according to Sec. 5.2.
 		"""
+		
+		r_prim = data.A @ state.x - state.z
+		r_dual = data.P @ state.x + data.q + data.A.T @ state.y
 
-		# TODO(pculbert): implement penalty scheduling. 
-		return state
+		r_prim_norm = jnp.linalg.norm(r_prim, ord=jnp.inf)
+		r_dual_norm = jnp.linalg.norm(r_dual, ord=jnp.inf)
+
+		Ax_norm = jnp.linalg.norm(data.A @ state.x, ord=jnp.inf)
+		z_norm = jnp.linalg.norm(state.z, ord=jnp.inf)
+		Px_norm = jnp.linalg.norm(data.P @ state.x, ord=jnp.inf)
+		Aty_norm = jnp.linalg.norm(data.A.T @ state.y, ord=jnp.inf)
+		q_norm = jnp.linalg.norm(data.q, ord=jnp.inf)
+
+		scaling = jnp.sqrt((r_prim_norm/(jnp.finfo(state.x.dtype).eps+ jnp.maximum(Ax_norm, z_norm)))
+			/ (r_dual_norm)/(jnp.finfo(state.x.dtype).eps + jnp.maximum(jnp.maximum(Px_norm, Aty_norm), q_norm)))
+
+		return jax.lax.cond(
+			jnp.logical_or(scaling >= 5., scaling <= 0.2),
+			lambda val: self._inner_rho_update(*val),
+			lambda val: val[1],
+			(data, state, scaling * state.rho))
+
+	def _inner_rho_update(self, data, state, rho):
+		kkt_mat = build_single_kkt(data.P, data.A, rho, self.config.sigma)
+		kkt_lu = jax.scipy.linalg.lu_factor(kkt_mat)
+		with jdc.copy_and_mutate(state) as new_state:
+			new_state.kkt_mat = kkt_mat
+			new_state.kkt_lu = kkt_lu
+			new_state.rho = rho
+
+		return new_state
 
 	def unscale_vars(self, data, state):
 		with jdc.copy_and_mutate(state) as new_state:
