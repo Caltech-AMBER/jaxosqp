@@ -11,6 +11,14 @@ Then, install the package locally using
 
 ``` pip install -e . ``` 
 
+[AHL] To install all development dependencies, run
+``` pip install -r requirements_dev.txt ```
+[AHL] To activate and use pre-commit hooks, run
+```
+pre-commit install
+```
+Upon every future commit, pre-commit checks will be run.
+
 ### Usage
 
 OSQP solves quadratic programs of the form:

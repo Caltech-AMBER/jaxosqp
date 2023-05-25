@@ -5,7 +5,6 @@ import jax.numpy as jnp
 
 from functools import partial
 from jaxosqp import utils
-from typing import Tuple
 
 @jdc.pytree_dataclass
 class OSQPConfig:
@@ -87,7 +86,7 @@ class OSQPState:
 	"""Flags for dual infeasibility."""
 	kkt_mat: jnp.ndarray
 	"""Full, dense KKT matrix used for ADMM step computation."""
-	kkt_lu: Tuple[jnp.ndarray, jnp.ndarray]
+	kkt_lu: tuple[jnp.ndarray, jnp.ndarray]
 	"""LU factorization of the KKT matrix; a tuple of permuations / data for each matrix."""
 	rho: jnp.ndarray
 	"""ADMM penalty weights."""
