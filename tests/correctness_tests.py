@@ -8,13 +8,17 @@ from hypothesis import given, settings
 
 from jaxosqp import osqp
 
-from .hypothesis_utils import qp_random2_dims
+from .hypothesis_utils import qp_random1_dims
 
-# from hypothesis import given, settings, strategies as st
+# from hypothesis import given, settings, strategies as st  # [DEBUG]
+
+jax.config.update("jax_enable_x64", True)
+
+# @given(st.one_of(qp_random1_dims(), qp_random2_dims()))  # [DEBUG]
+# @given(qp_random2_dims(n_range=(1, 10), density=0.15))  # [DEBUG]
 
 
-# @given(st.one_of(qp_random1_dims(), qp_random2_dims()))
-@given(qp_random2_dims(n_range=(1, 10), density=0.15))
+@given(qp_random1_dims())  # [DEBUG]
 @settings(deadline=None)
 def test_qp_convergence1(data: types.GenericAlias(tuple, (np.ndarray,) * 5)):
     """Tests the correctness of the QP solve. Generates random QPs from 2 strategies.
@@ -61,13 +65,13 @@ def test_qp_convergence1(data: types.GenericAlias(tuple, (np.ndarray,) * 5)):
         cp.Minimize((1 / 2) * cp.quad_form(x, P) + q.T @ x),
         [A @ x <= u, l <= A @ x],
     )
-    prob.solve(
-        solver=cp.OSQP, eps_abs=1e-3, eps_rel=1e-3, verbose=True
-    )  # OSQP default tols
+    prob.solve(solver=cp.OSQP, eps_abs=1e-3, eps_rel=1e-3)  # OSQP default tols
 
     # checking that impl converges iff cvxpy converges
     converged_jax = info.converged.item()
     converged_cvx = prob.status not in ["infeasible", "unbounded"]
+    if converged_jax != converged_cvx:  # [DEBUG]
+        breakpoint()
     assert converged_jax == converged_cvx
 
     # # checking closeness of primal/dual optima

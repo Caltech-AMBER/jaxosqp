@@ -52,8 +52,8 @@ def psd_matrices(draw, *, n: int = 3):
             np.float64,
             n,
             elements=st.floats(
-                min_value=1e-6,
-                max_value=1e6,  # help to prevent overflow
+                min_value=1e-6,  # ensure PD so cvx doesn't complain about DCP
+                max_value=1e3,  # help to prevent overflow
                 allow_nan=False,
                 allow_infinity=False,
             ),
@@ -80,7 +80,7 @@ def lower_upper_bounds(draw, *, n: int = 3):
     ind_inverted = lu[:, 0] > lu[:, 1]
     lu[ind_inverted, :] = lu[ind_inverted, ::-1]
 
-    # eps=1e-30 in the OSQP code
+    # eps=1e-30 in the OSQP code. Use 1e-6 for 32 bit precision.
     l = lu[:, 0]
     u = lu[:, 1] + 1e-6
     return l, u
