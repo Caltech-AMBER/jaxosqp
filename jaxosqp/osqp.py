@@ -69,10 +69,6 @@ class OSQPState:
 	""" Container for primal variables."""
 	z: jnp.ndarray
 	""" Projected constraint values. """
-	chi: jnp.ndarray
-	""" Auxilliary copy of x for ADMM."""
-	zeta: jnp.ndarray
-	""" Auxilliary copy of z for ADMM."""
 	y: jnp.ndarray
 	""" Lagrange multipliers for Ax = z."""
 	dx: jnp.ndarray
@@ -125,7 +121,6 @@ class OSQPProblem:
 
 		return prob, data, state
 
-	@jax.jit
 	def build_data_state(self, P, q, A, l, u):
 		"""
 		Helper method to wrap problem data + create initial solver state.
@@ -145,8 +140,6 @@ class OSQPProblem:
 		# Allocate storage for solver data.
 		x = jnp.zeros((B, n))
 		z = jnp.zeros((B, m))
-		chi = jnp.zeros((B, n))
-		zeta = jnp.zeros((B, m))
 		y = jnp.zeros((B, m))
 		dx = jnp.zeros((B, n))
 		dy = jnp.zeros((B, m))
@@ -172,41 +165,40 @@ class OSQPProblem:
 		# Build KKT matrix and LU factorize it. 
 		kkt_mat, kkt_lu = build_kkt(data.P, data.A, rho, self.config.sigma)
 
-		return data, OSQPState(x, z, chi, zeta, y, dx, dy, converged, primal_infeas, dual_infeas, kkt_mat, kkt_lu, rho)
+		return data, OSQPState(x, z, y, dx, dy, converged, primal_infeas, dual_infeas, kkt_mat, kkt_lu, rho)
 
 	def step(self, data, state):
 		"""
 		Main step of OSQP algorithm; computes one ADMM step on the problem.
 		"""
 		# Compute residuals vector.
-		r = utils.vcat(self.config.sigma * state.x - data.q, state.z - (1/state.rho) * state.y)
+		# r = utils.vcat(self.config.sigma * state.x - data.q, state.z - jnp.diag(1/state.rho) @ state.y)
+		r = jnp.concatenate((self.config.sigma * state.x - data.q, state.z - (1/state.rho) * state.y), axis=0)
 
 		# Solve the KKT system in LU form. 
-		r = jax.scipy.linalg.lu_solve(state.kkt_lu, r)
+		kkt_sol = jax.scipy.linalg.lu_solve(state.kkt_lu, r)
 
 		# Pull out ADMM vars corresponding to x, z. 
-		chi = r[:self.n]
-		zeta = state.z + (1/state.rho) * (r[self.n:] - state.y)
+		chi = kkt_sol[:self.n]
+		zeta = state.z + (1 / state.rho) * (kkt_sol[self.n:] - state.y)
 
-		# Update x, z with a filtered step.
+		# Update x, z with a filtered step.ν
 		new_x = self.config.alpha * chi + (1 - self.config.alpha) * state.x
 		new_z = self.config.alpha * zeta + (1 - self.config.alpha) * state.z + (1/state.rho) * state.y
+		new_z = jnp.clip(new_z,data.l, data.u)
 
 		# Compute new Lagrange multipliers.
-		new_y = state.rho * (new_z - jnp.clip(new_z, data.l, data.u))
+		new_y = state.y + state.rho * (self.config.alpha * zeta + (1 - self.config.alpha) * state.z - new_z)
 
 		# Note: jdc dataclasses are immutable; use this helper to copy them. 
-		with jdc.copy_and_mutate(state, validate=False) as new_state:
-
-			new_state.chi = chi
-			new_state.zeta = zeta
+		with jdc.copy_and_mutate(state) as new_state:
 
 			new_state.dx = new_x - state.x
 			new_state.dy = new_y - state.y
 
 			new_state.x = new_x
 			new_state.y = new_y
-			new_state.z = jnp.clip(new_z, data.l, data.u)
+			new_state.z = new_z
 
 		return new_state
 
@@ -257,11 +249,12 @@ class OSQPProblem:
 
 		return jnp.logical_and(ii < self.config.max_iters, jnp.logical_not(is_finished))
 
-	@jax.jit
+	# @jax.jit
 	def solve(self, data, state):
 		"""
 		Top-level (jit'd) solve function; returns state of last solver iter.
-		"""
+		""" 
+		state = self.scale_vars(data, state)
 		iters, data, state = jax.lax.while_loop(self.solve_cond_fun, self.solve_inner, (0, data, state))
 		state = self.unscale_vars(data, state)
 
@@ -277,18 +270,21 @@ class OSQPProblem:
 		# Compute some matrix-vector products we'll need. 
 
 		# Compute primal and dual residuals.
-		r_prim = jnp.diag(1 / data.E) @ (data.A @ state.x - state.z)
-		r_dual = (1 / data.c) * jnp.diag(1 / data.D) @ (data.P @ state.x + data.q + data.A.T @ state.y)
+		r_prim = (1 / data.E) * (data.A @ state.x - state.z)
+		r_dual = (1 / data.c) * (1 / data.D) * (data.P @ state.x + data.q + data.A.T @ state.y)
 
 		# Compute l-inf norms of a bunch of quantities we need.
-		prim_norm = jnp.linalg.norm(r_prim, ord=jnp.inf)
-		dual_norm = jnp.linalg.norm(r_dual, ord=jnp.inf)
+		prim_norm = utils.linf_norm(r_prim)
+		dual_norm = utils.linf_norm(r_dual)
 
-		Ax_norm = jnp.linalg.norm(jnp.diag(1 / data.E) @ data.A @ state.x, ord=jnp.inf)
-		Px_norm = jnp.linalg.norm(jnp.diag(1 / data.D) @ data.P @ state.x, ord=jnp.inf)
-		Aty_norm = jnp.linalg.norm(jnp.diag(1 / data.D) @ data.A.T @ state.y, ord=jnp.inf)
-		z_norm = jnp.linalg.norm(jnp.diag(1 / data.E) * state.z, ord=jnp.inf)
-		q_norm = jnp.linalg.norm(jnp.diag(1 / data.D) @ data.q, ord=jnp.inf)
+		# Compute l-inf norms for primal tolerance. 
+		Ax_norm = utils.linf_norm((1 / data.E) * (data.A @ state.x))
+		z_norm = utils.linf_norm((1 / data.E) * state.z)
+
+		# Compute l-inf norms for dual lolerance
+		Px_norm = utils.linf_norm((1 / data.D) * (data.P @ state.x))
+		Aty_norm = utils.linf_norm((1 / data.D) * (data.A.T @ state.y))
+		q_norm = utils.linf_norm(jnp.diag(1 / data.D) @ data.q)
 
 		# Compute the epsilon (combined abs / rel tolerance) needed for convergence. 
 		eps_prim = self.config.eps_abs + self.config.eps_rel * jnp.maximum(Ax_norm, z_norm)
@@ -310,8 +306,8 @@ class OSQPProblem:
 		"""
 
 		# Precompute infinity norms of dy, A * dy.
-		dy_inf = jnp.linalg.norm(jnp.diag(data.E) @ state.dy, ord=jnp.inf)
-		Ady_inf = jnp.linalg.norm(jnp.diag(1 / data.D) @ data.A.T @ state.dy, ord=jnp.inf)
+		dy_inf = utils.linf_norm(jnp.diag(data.E) @ state.dy)
+		Ady_inf = utils.linf_norm(jnp.diag(1 / data.D) @ (data.A.T @ state.dy))
 
 		# Compute constraint residual terms.
 		const_residuals = jnp.dot(data.u, jnp.maximum(0., state.dy)) + jnp.dot(data.l, jnp.minimum(0., state.dy))
@@ -336,8 +332,8 @@ class OSQPProblem:
 		qdx = jnp.dot(data.q, state.dx)
 
 		# Compute some l-inf norms we'll need. 
-		dx_norm = jnp.linalg.norm(jnp.diag(1 / data.D) @ state.dx, ord=jnp.inf)
-		Pdx_norm = jnp.linalg.norm(Pdx, ord=jnp.inf)
+		dx_norm = utils.linf_norm(jnp.diag(1 / data.D) @ state.dx)
+		Pdx_norm = utils.linf_norm(Pdx)
 
 		# Enforce upper / lower bounds only on constraints where l/u are finite. 
 		lower_bound = jnp.where(jnp.isinf(data.l), -self.config.eps_dinf * dx_norm, -jnp.inf)
@@ -371,8 +367,8 @@ class OSQPProblem:
 			ii, data = val
 
 			# Compute delta terms by looking at l-inf norms of the "data matrix" M (32).
-			delta_d = 1 / jnp.sqrt(1e-8 + jnp.linalg.norm(utils.vcat(data.P, data.A), ord=jnp.inf, axis=0))
-			delta_e = 1 / jnp.sqrt(1e-8 + jnp.linalg.norm(data.A.T, ord=jnp.inf, axis=0))
+			delta_d = 1 / jnp.sqrt(1e-8 + utils.linf_norm(utils.vcat(data.P, data.A), axis=0))
+			delta_e = 1 / jnp.sqrt(1e-8 + utils.linf_norm(data.A.T, axis=0))
 
 			# Update problem data with new scaling. 
 			P = data.c * jnp.diag(delta_d) @ data.P @ jnp.diag(delta_d)
@@ -382,7 +378,7 @@ class OSQPProblem:
 			u = jnp.diag(delta_e) @ data.u
 
 			# Compute new cost scaling term.
-			gamma = 1 / jnp.maximum(jnp.mean(jnp.linalg.norm(P, ord=jnp.inf, axis=0)), jnp.linalg.norm(q, ord=jnp.inf))
+			gamma = 1 / jnp.maximum(jnp.mean(utils.linf_norm(P, axis=0)), utils.linf_norm(q))
 
 			# Update cost parameters with new scaling.
 			P = gamma * P
@@ -411,13 +407,19 @@ class OSQPProblem:
 		Update the penalty parameters rho according to Sec. 5.2.
 		"""
 
-		# TODO(pculbert): implement penalty scheduling. 
 		return state
 
 	def unscale_vars(self, data, state):
 		with jdc.copy_and_mutate(state) as new_state:
 			new_state.x = jnp.diag(data.D) @ state.x
 			new_state.y = (1 / data.c) * jnp.diag(data.E) @ state.y
+
+		return new_state
+
+	def scale_vars(self, data, state):
+		with jdc.copy_and_mutate(state) as new_state:
+			new_state.x = jnp.diag(1 / data.D) @ state.x
+			new_state.y = data.c * jnp.diag(1 / data.E) @ state.y
 
 		return new_state
 

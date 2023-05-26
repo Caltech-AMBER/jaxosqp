@@ -5,3 +5,6 @@ def vcat(*args):
 
 def hcat(*args):
 	return jnp.concatenate(args, axis=1)
+
+def linf_norm(x, **args):
+	return jnp.linalg.norm(x, ord=jnp.inf, **args)
