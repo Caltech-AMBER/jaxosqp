@@ -5,6 +5,7 @@ import jax.numpy as jnp
 
 from functools import partial
 from jaxosqp import utils
+from jax._src.lax import linalg as lax_linalg
 from typing import Tuple
 
 @jdc.pytree_dataclass
@@ -83,8 +84,10 @@ class OSQPState:
 	"""Flags for dual infeasibility."""
 	kkt_mat: jnp.ndarray
 	"""Full, dense KKT matrix used for ADMM step computation."""
-	kkt_lu: Tuple[jnp.ndarray, jnp.ndarray]
+	# kkt_lu: Tuple[jnp.ndarray, jnp.ndarray]
+	kkt_lu: jnp.ndarray
 	"""LU factorization of the KKT matrix; a tuple of permuations / data for each matrix."""
+	kkt_perm: jnp.ndarray
 	rho: jnp.ndarray
 	"""ADMM penalty weights."""
 
@@ -163,9 +166,9 @@ class OSQPProblem:
 		rho = jnp.where(l == u, 1e3 * self.config.rho_bar, self.config.rho_bar)
 
 		# Build KKT matrix and LU factorize it. 
-		kkt_mat, kkt_lu = build_kkt(data.P, data.A, rho, self.config.sigma)
+		kkt_mat, kkt_lu, kkt_perm = build_kkt(data.P, data.A, rho, self.config.sigma)
 
-		return data, OSQPState(x, z, y, dx, dy, converged, primal_infeas, dual_infeas, kkt_mat, kkt_lu, rho)
+		return data, OSQPState(x, z, y, dx, dy, converged, primal_infeas, dual_infeas, kkt_mat, kkt_lu, kkt_perm, rho)
 
 	def step(self, data, state):
 		"""
@@ -176,7 +179,8 @@ class OSQPProblem:
 		r = jnp.concatenate((self.config.sigma * state.x - data.q, state.z - (1/state.rho) * state.y), axis=0)
 
 		# Solve the KKT system in LU form. 
-		kkt_sol = jax.scipy.linalg.lu_solve(state.kkt_lu, r)
+		# kkt_sol = jax.scipy.linalg.lu_solve(state.kkt_lu, r)
+		kkt_sol = lax_linalg.lu_solve(state.kkt_lu, state.kkt_perm, r, 0)
 
 		# Pull out ADMM vars corresponding to x, z. 
 		chi = kkt_sol[:self.n]
@@ -429,9 +433,12 @@ def build_kkt(P, A, rho, sigma):
 	Helper function to build the OSQP KKT system (and LU factorize it).
 	"""
 	kkt_mat = jax.vmap(build_single_kkt, in_axes=(0, 0, 0, None))(P, A, rho, sigma)
-	kkt_lu = jax.scipy.linalg.lu_factor(kkt_mat)
+	kkt_lu, kkt_pivots = jax.scipy.linalg.lu_factor(kkt_mat)
+	m, _ = kkt_lu.shape[-2:]
+	kkt_perm = jax.lax.linalg.lu_pivots_to_permutation(kkt_pivots, m)
 
-	return kkt_mat, kkt_lu
+
+	return kkt_mat, kkt_lu, kkt_perm
 
 def build_single_kkt(P, A, rho, sigma):
 	"""
