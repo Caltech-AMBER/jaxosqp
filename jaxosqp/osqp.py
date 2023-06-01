@@ -97,8 +97,6 @@ class OSQPProblem:
     """Number of decision variables."""
     m: jdc.Static[int]
     """Number of constraints."""
-    B: jdc.Static[int]
-    """Batch size."""
     config: OSQPConfig
     """Config parameters for problem."""
 
@@ -111,11 +109,11 @@ class OSQPProblem:
         """
 
         # Extract shapes from constraint matrix.
-        assert len(A.shape) == 3
-        B, m, n = A.shape
+        assert len(A.shape) == 2
+        m, n = A.shape
 
         # Create OSQPProblem object.
-        prob = cls(n, m, B, config)
+        prob = cls(n, m, config)
         
         data, state = prob.build_data_state(P, q, A, l, u)
 
@@ -129,35 +127,29 @@ class OSQPProblem:
         """
 
         # Pull out shape vars for convenience. 
-        B, m, n = self.B, self.m, self.n
-
-        # Reshape data to ensure correct shapes. 
-        P = P.reshape(B, n, n)
-        q = q.reshape(B, n)
-        l = l.reshape(B, m)
-        u = u.reshape(B, m)
+        m, n = self.m, self.n
 
         # Allocate storage for solver data.
-        x = jnp.zeros((B, n))
-        z = jnp.zeros((B, m))
-        y = jnp.zeros((B, m))
-        dx = jnp.zeros((B, n))
-        dy = jnp.zeros((B, m))
+        x = jnp.zeros((n,))
+        z = jnp.zeros((m,))
+        y = jnp.zeros((m,))
+        dx = jnp.zeros((n,))
+        dy = jnp.zeros((m,))
 
         # Allocate problem status flags.
-        converged = jnp.zeros(B).astype(bool)
-        primal_infeas = jnp.zeros(B).astype(bool)
-        dual_infeas = jnp.zeros(B).astype(bool)
+        converged = jnp.zeros(()).astype(bool)
+        primal_infeas = jnp.zeros(()).astype(bool)
+        dual_infeas = jnp.zeros(()).astype(bool)
 
         # Initialize scaling parameters.
-        D = jnp.ones((B, n))
-        E = jnp.ones((B, m))
-        c = jnp.ones((B))
+        D = jnp.ones((n,))
+        E = jnp.ones((m,))
+        c = jnp.ones(())
 
         # Wrap problem data in OSQPData object. 
         data = OSQPData(P, q, A, l, u, D, E, c)
 
-        data = jax.vmap(self.scale_problem)(data)
+        data = self.scale_problem(data)
 
         # Setup penalty weights.
         rho = jnp.where(l == u, 1e3 * self.config.rho_bar, self.config.rho_bar)
@@ -424,20 +416,24 @@ class OSQPProblem:
         return new_state
 
 
+# def build_kkt(P, A, rho, sigma):
+#     """
+#     Helper function to build the OSQP KKT system (and LU factorize it).
+#     """
+#     kkt_mat = jax.vmap(build_single_kkt, in_axes=(0, 0, 0, None))(P, A, rho, sigma)
+#     kkt_lu = jax.scipy.linalg.lu_factor(kkt_mat)
+
+#     return kkt_mat, kkt_lu
+
 def build_kkt(P, A, rho, sigma):
-    """
-    Helper function to build the OSQP KKT system (and LU factorize it).
-    """
-    kkt_mat = jax.vmap(build_single_kkt, in_axes=(0, 0, 0, None))(P, A, rho, sigma)
-    kkt_lu = jax.scipy.linalg.lu_factor(kkt_mat)
-
-    return kkt_mat, kkt_lu
-
-def build_single_kkt(P, A, rho, sigma):
     """
     Function to build a single OSQP KKT system (vmap this for batches).
     """
 
-    return utils.vcat(
+    kkt_mat = utils.vcat(
         utils.hcat(P + sigma * jnp.eye(P.shape[0]), A.T),
         utils.hcat(A, -jnp.diag(1/rho)))
+
+    kkt_lu = jax.scipy.linalg.lu_factor(kkt_mat)
+    
+    return kkt_mat, kkt_lu
