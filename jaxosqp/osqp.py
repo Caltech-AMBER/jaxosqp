@@ -343,6 +343,7 @@ class OSQPProblem:
         dual_infeas = jnp.logical_and(dual_infeas, qdx <= self.config.eps_dinf * data.c * dx_norm)
         dual_infeas = jnp.logical_and(dual_infeas, jnp.all(lower_bound <= Adx))
         dual_infeas = jnp.logical_and(dual_infeas, jnp.all(Adx <= upper_bound))
+        dual_infeas = jnp.logical_and(dual_infeas, dx_norm >= jnp.finfo(state.x.dtype).eps)
 
         with jdc.copy_and_mutate(state) as new_state:
             new_state.dual_infeas = dual_infeas
