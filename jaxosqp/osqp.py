@@ -158,6 +158,42 @@ class OSQPProblem:
         kkt_mat, kkt_lu = build_kkt(data.P, data.A, rho, self.config.sigma)
 
         return data, OSQPState(x, z, y, dx, dy, converged, primal_infeas, dual_infeas, kkt_mat, kkt_lu, rho)
+    
+    def update_problem_data(self, data, state, P=None, q=None, A=None, l=None, u=None, rescale_data=True):
+        """
+        Helper function to update problem data in-place (reusing x, y, z for warm start). If rescale_data=True,
+        the Ruiz equilibriation procedure will run again for config.scaling_iters.
+        """
+            
+        #TODO(pculbert): double-check this doesn't need lax.cond to be diff'able (I think it should be fine).
+        
+        # Update relevant problem data.
+        with jdc.copy_and_mutate(data) as new_data:
+            if P is not None: new_data.P = data.c * jnp.diag(data.D) @ P @ jnp.diag(data.D)
+            if q is not None: new_data.q = data.c * jnp.diag(data.D) @ q
+            if A is not None: new_data.A = jnp.diag(data.E) @ A @ jnp.diag(data.D)
+            if l is not None: new_data.l = jnp.diag(data.E) @ l
+            if u is not None: new_data.u = jnp.diag(data.E) @ u
+            
+        if rescale_data:
+            new_data = self.scale_problem(new_data)
+        
+        with jdc.copy_and_mutate(state) as new_state:
+            # Reset rho on warm start.
+            new_state.rho = jnp.where(new_data.l == new_data.u, 1e3 * self.config.rho_bar, self.config.rho_bar)
+            
+            # Recompute KKT matrix + LU factorize. 
+            new_state.kkt_mat, new_state.kkt_lu = build_kkt(new_data.P, new_data.A, new_state.rho, self.config.sigma)
+            
+            # Reset convergence flags (since problem data have been reset).
+            new_state.converged = jnp.zeros(()).astype(bool)
+            new_state.primal_infeas = jnp.zeros(()).astype(bool)
+            new_state.dual_infeas = jnp.zeros(()).astype(bool)
+            new_state.dx = jnp.zeros((self.n,))
+            new_state.dy = jnp.zeros((self.m,)) 
+            
+        return new_data, new_state
+        
 
     def step(self, data, state):
         """
