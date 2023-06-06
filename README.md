@@ -13,12 +13,16 @@ Then, install the package locally using
 
 ### Usage
 
-OSQP solves quadratic programs of the form:
+This is a (slight) modification of OSQP that solves quadratic programs (QPs)
+with a trust region constraint,
 
 $$\begin{align} 
 \min_x & \quad \frac{1}{2} x^T P x + q^T x \\
-\text{s.t. } & \quad \ell \leq A x \leq u. 
+\text{s.t. } & \quad \ell \leq A x \leq u\\
+& \quad \lvert\lvert x \rvert \vert \leq \Delta,
 \end{align}$$ 
+
+where $P \in mathbf{S}^n_+$ is a positive-semidefinite matrix, $A \in \mathbf{R}^{m \times n}$, $q \in \mathbf{R}^n,$ $\ell, u \in \mathbf{R}^m,$ and $\Delta > 0$ is a trust region size. 
 
 This solver is built to solve batches of QPs in this form, assuming the problem data `P, q, A, l, u` are stored as `jnp.array`s of the appropriate size.
 
@@ -96,4 +100,5 @@ Grouping the big goals by topic:
 
 3. Convenience / QoL:
     - [ ] Method to mutate `OSQPData` to change just one field (and update `converged, primal_infeas, dual_infeas` of OSQPProblem).
-    - [ ] Use `vmap` to construct a batch of problems, instead of hardcoding size of `A` into factory method.
+    - [x] Use `vmap` to construct a batch of problems, instead of hardcoding size of `A` into factory method.
+    - [ ] Add helper functions for constructing problems with one-sided inequalities and/or equality constraints.
