@@ -200,8 +200,7 @@ class OSQPProblem:
         Main step of OSQP algorithm; computes one ADMM step on the problem.
         """
         # Compute residuals vector.
-        # r = utils.vcat(self.config.sigma * state.x - data.q, state.z - jnp.diag(1/state.rho) @ state.y)
-        r = jnp.concatenate((self.config.sigma * state.x - data.q, state.z - (1/state.rho) * state.y), axis=0)
+        r = utils.vcat(self.config.sigma * state.x - data.q, state.z - jnp.diag(1/state.rho) @ state.y)
 
         # Solve the KKT system in LU form. 
         kkt_sol = jax.scipy.linalg.lu_solve(state.kkt_lu, r)
@@ -210,8 +209,9 @@ class OSQPProblem:
         chi = kkt_sol[:self.n]
         zeta = state.z + (1 / state.rho) * (kkt_sol[self.n:] - state.y)
 
-        # Update x, z with a filtered step.ν
+        # Update x, z with a filtered step.
         new_x = self.config.alpha * chi + (1 - self.config.alpha) * state.x
+        
         new_z = self.config.alpha * zeta + (1 - self.config.alpha) * state.z + (1/state.rho) * state.y
         new_z = jnp.clip(new_z,data.l, data.u)
 
@@ -295,12 +295,10 @@ class OSQPProblem:
         Returns a state with updated `converged` variables. 
         """
 
-        # Compute some matrix-vector products we'll need. 
-
         # Compute primal and dual residuals.
         r_prim = (1 / data.E) * (data.A @ state.x - state.z)
         r_dual = (1 / data.c) * (1 / data.D) * (data.P @ state.x + data.q + data.A.T @ state.y)
-
+        
         # Compute l-inf norms of a bunch of quantities we need.
         prim_norm = utils.linf_norm(r_prim)
         dual_norm = utils.linf_norm(r_dual)
