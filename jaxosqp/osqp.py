@@ -112,6 +112,10 @@ class OSQPProblem:
         assert len(A.shape) == 2
         m, n = A.shape
 
+        # Ensure lower/upper bounds are 1D
+        assert len(l.shape) == 1
+        assert len(u.shape) == 1
+
         # Create OSQPProblem object.
         prob = cls(n, m, config)
         
