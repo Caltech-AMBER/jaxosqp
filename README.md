@@ -60,7 +60,7 @@ In short, `prob` is a top-level container for the problem config; `data` is a co
 and `state` holds the internal variables used during the solve.
 
 We can solve our problem by running:
-```state = prob.solve(data, state)```
+```iters, data, state = prob.solve(data, state)```
 
 The optimal primal solution will be stored in `state.x`, and the optimal Lagrange multipliers will be stored in `state.y`.
 
