@@ -172,8 +172,8 @@ class OSQPProblem:
             if P is not None: new_data.P = data.c * jnp.diag(data.D) @ P @ jnp.diag(data.D)
             if q is not None: new_data.q = data.c * jnp.diag(data.D) @ q
             if A is not None: new_data.A = jnp.diag(data.E) @ A @ jnp.diag(data.D)
-            if l is not None: new_data.l = jnp.diag(data.E) @ l
-            if u is not None: new_data.u = jnp.diag(data.E) @ u
+            if l is not None: new_data.l = data.E * l
+            if u is not None: new_data.u = data.E * u
             
         if rescale_data:
             new_data = self.scale_problem(new_data)
@@ -403,8 +403,8 @@ class OSQPProblem:
             P = data.c * jnp.diag(delta_d) @ data.P @ jnp.diag(delta_d)
             q = data.c * jnp.diag(delta_d) @ data.q
             A = jnp.diag(delta_e) @ data.A @ jnp.diag(delta_d)
-            l = jnp.diag(delta_e) @ data.l
-            u = jnp.diag(delta_e) @ data.u
+            l = delta_e * data.l
+            u = delta_e * data.u
 
             # Compute new cost scaling term.
             gamma = 1 / jnp.maximum(jnp.mean(utils.linf_norm(P, axis=0)), utils.linf_norm(q))
