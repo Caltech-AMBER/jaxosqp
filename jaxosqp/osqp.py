@@ -400,8 +400,12 @@ class OSQPProblem:
             ii, data = val
 
             # Compute delta terms by looking at l-inf norms of the "data matrix" M (32).
-            delta_d = 1 / jnp.sqrt(1e-8 + utils.linf_norm(utils.vcat(data.P, data.A), axis=0))
-            delta_e = 1 / jnp.sqrt(1e-8 + utils.linf_norm(data.A.T, axis=0))
+            PA_norms = utils.limit_scaling(
+                utils.linf_norm(utils.vcat(data.P, data.A), axis=0)
+            )
+            A_T_norms = utils.limit_scaling(utils.linf_norm(data.A.T, axis=0))
+            delta_d = 1 / jnp.sqrt(PA_norms)
+            delta_e = 1 / jnp.sqrt(A_T_norms)
 
             # Update problem data with new scaling. 
             P = data.c * jnp.diag(delta_d) @ data.P @ jnp.diag(delta_d)
